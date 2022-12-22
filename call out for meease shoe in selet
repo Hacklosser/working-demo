@@ -1,0 +1,42 @@
+package com.saksham.rwsales.ad_callouts;
+
+import java.util.List;
+
+import javax.servlet.ServletException;
+
+import org.openbravo.dal.service.OBDal;
+import org.openbravo.erpCommon.ad_callouts.SimpleCallout;
+import org.openbravo.erpCommon.info.Product;
+import org.openbravo.model.common.order.Order;
+
+public class RWS_SetTransporter extends SimpleCallout {
+
+  /**
+   * Update state & ship to tin no on change of Ship to address
+   */
+  private static final long serialVersionUID = 1L;
+
+  @Override
+  protected void execute(CalloutInfo info) throws ServletException {
+
+    String OrderID = info.getStringParameter("inpcOrderId", null);
+    Order order = OBDal.getInstance().get(Order.class, OrderID);
+    String strTransporterId = order.getRwsTransporter() != null ? order.getRwsTransporter().getId()
+        : "";
+    String strCustomerName = order.getBusinessPartner().getName();
+
+    info.addResult("inpTransporterId", strTransporterId);
+
+    info.addResult("inprwsCustomername", strCustomerName);
+    List<OrderLine> lines = order.getOrderLineList();
+    
+    for (OrderLine line : lines) {
+     Product product =  line.getProduct();
+     product.getTypeList();
+     if(type == "service") {
+    	 info.addResult("ERROR", "INAKIC EFHeDJK");
+     }
+    }
+  }
+}
+
