@@ -1,0 +1,263 @@
+package com.easycloud.taginvoice.ad_actionhandler;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.log4j.Logger;
+import org.codehaus.jettison.json.JSONArray;
+import org.codehaus.jettison.json.JSONException;
+import org.codehaus.jettison.json.JSONObject;
+import org.hibernate.Query;
+import org.openbravo.base.exception.OBException;
+import org.openbravo.base.provider.OBProvider;
+import org.openbravo.client.application.process.BaseProcessActionHandler;
+import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
+import org.openbravo.service.json.JsonUtils;
+
+import com.easycloud.taginvoice.eis_glitem;
+import com.easycloud.taginvoice.eis_invoice;
+import com.easycloud.taginvoice.eis_taginvoice;
+
+public class eis_taginvoicebutton extends BaseProcessActionHandler {
+	private static final Logger log = Logger.getLogger(eis_taginvoicebutton.class);
+	StringBuilder sblog = new StringBuilder();
+
+	@Override
+	protected JSONObject doExecute(Map<String, Object> parameters, String content) {
+		JSONObject jsonRequest = null;
+		StringBuilder errormsg = new StringBuilder();
+		String msgstring = "";
+		try {
+			jsonRequest = new JSONObject(content);
+			JSONObject params = jsonRequest.getJSONObject("_params");
+			System.out.println("jsonRequest:-"+jsonRequest);
+			String tinid = jsonRequest.getString("EIS_Taginvoice_ID");
+			// String pid = jsonRequest.getString("FIN_Payment_ID");
+			// System.out.println("pid:-"+pid);
+			eis_taginvoice tinObj = OBDal.getInstance().get(eis_taginvoice.class, tinid);
+			JSONArray SaleSelectedIds = params.getJSONObject("Invoices").getJSONArray("_selection");
+			BigDecimal SalesTotal = new BigDecimal(0);
+			BigDecimal outstandingTotal = new BigDecimal(0);
+			BigDecimal balance =tinObj.getFinPayment().getEisBaltoset();
+			Integer count6 = 0;
+			BigDecimal rec = new BigDecimal("0");
+			  for(eis_glitem globj : tinObj.getEisGlitemList()) {
+	        	  BigDecimal zer = new BigDecimal("0");
+	        	  if(globj.getPaidOut().compareTo(zer) > 0) {
+	        		  count6=count6+1;
+	        		  rec = rec.add(globj.getPaidOut());
+	        	  }
+	          }
+//log.warn(rec)
+			  String org="";
+			if (SaleSelectedIds.length() > 0) {
+				
+				String sbpslinesHql = "delete from eis_invoice e where e.eisTaginvoice.id='" + tinid + "'";
+				Query sbpslist = OBDal.getInstance().getSession().createQuery(sbpslinesHql);
+				sbpslist.executeUpdate();
+				for (int i = 0; i < SaleSelectedIds.length(); i++) {
+					JSONObject sales = SaleSelectedIds.getJSONObject(i);
+					log.warn(sales);
+					String invoiceNo = sales.getString("invoiceNo");
+					log.warn(invoiceNo);
+					String psdId = sales.getString("id");
+					log.warn(psdId);
+					String Bpid = sales.getString("businessPartner");
+					String outstandingamt = sales.getString("outstandingAmount");
+					String name = "Sale";
+					String amount = sales.getString("amount");
+					BigDecimal sales_amount = new BigDecimal(amount);
+					BigDecimal ot_amount = new BigDecimal(outstandingamt);
+					BigDecimal n = new BigDecimal(0);
+					
+					  String orgquery="select e.organization.id from Invoice e where e.documentNo='"+invoiceNo+"'";
+					  Query orglist = OBDal.getInstance().getSession().createQuery(orgquery);
+					  String orgid=(String) orglist.list().get(0);
+					  if(org.isEmpty()) {
+						  org=orgid;
+						  log.warn(org);
+					  }
+					  else {
+						  if(!org.equals(orgid)) {
+							  msgstring = "Tagging Invoices with Different organization.";
+								OBDal.getInstance().rollbackAndClose();
+								log.warn("Organization checking:-" + msgstring);
+								errormsg(jsonRequest, msgstring);
+								return jsonRequest; 
+							  
+						  }
+					  }
+					if (sales_amount.compareTo(n) > 0) {
+						log.warn(sales_amount);
+						if(ot_amount.compareTo(sales_amount)>=0) {
+						CreateInvoices(psdId, name, invoiceNo, Bpid, outstandingamt, sales_amount, tinObj,
+								jsonRequest);
+						SalesTotal = SalesTotal.add(sales_amount);
+						outstandingTotal = outstandingTotal.add(ot_amount);
+						}else {
+							msgstring = "Tagging Amount:-"+SalesTotal +" ,cannot be greater than Outstanding amount:-"+ot_amount;
+							OBDal.getInstance().rollbackAndClose();
+							log.warn("entered:-" + msgstring);
+							errormsg(jsonRequest, msgstring);
+							return jsonRequest;
+						}
+					}
+				}
+				log.warn(balance);
+				if (outstandingTotal.compareTo(SalesTotal) >= 0 && (SalesTotal.compareTo(balance.add(rec))<=0)) {
+					tinObj.setAdjustedAmount(SalesTotal);
+					tinObj.setTaginvoice(true);
+					OBDal.getInstance().save(tinObj);
+					OBDal.getInstance().flush();
+					msgstring = "Processed succesfully ";
+					successmsg(jsonRequest, msgstring);
+					JSONArray respActions = new JSONArray();
+					JSONObject refreshCurrentRecord = new JSONObject();
+					refreshCurrentRecord.put("refreshCurrentRecord", new JSONObject());
+					respActions.put(refreshCurrentRecord);
+					jsonRequest.put("responseActions", respActions);
+				} else {
+					msgstring = "Total Sale Invoice Amount cannot be greater than Total Outstanding Invoice amount./Balance to tag is only :-"+balance.add(rec);
+					OBDal.getInstance().rollbackAndClose();
+					log.warn("time:" + msgstring);
+					errormsg(jsonRequest, msgstring);
+					return jsonRequest;
+				}
+			} else {
+				msgstring = "Please select sale records.";
+				log.warn("time:" + msgstring);
+				errormsg(jsonRequest, msgstring);
+				return jsonRequest;
+			}
+			//System.out.println("content=" + content);
+
+		} catch (Exception e) {
+			try {
+				JSONObject jsonObj = new JSONObject(JsonUtils.convertExceptionToJson(e));
+				String message = (jsonObj.getJSONObject("response")).getJSONObject("error").getString("message");
+				OBDal.getInstance().rollbackAndClose();
+				JSONObject msg1 = new JSONObject();
+				msg1.put("severity", "error");
+				msg1.put("text", message);
+				jsonRequest.put("message", msg1);
+				return jsonRequest;
+			} catch (JSONException t) {
+				throw new OBException(t);
+			}
+		}
+		return jsonRequest;
+	}
+
+	private JSONObject errormsg(JSONObject jsonRequest, String msgstring) throws JSONException {
+		JSONObject msg = new JSONObject();
+		msg.put("severity", "error");
+		msg.put("text", msgstring);
+		jsonRequest.put("message", msg);
+		return jsonRequest;
+	}
+
+	private JSONObject successmsg(JSONObject jsonRequest, String msgstring) throws JSONException {
+		JSONObject msg = new JSONObject();
+		msg.put("severity", "success");
+		msg.put("text", msgstring);
+		jsonRequest.put("message", msg);
+		return jsonRequest;
+	}
+
+	private JSONObject CreateInvoices(String psdId, String name, String invoiceNo, String Bpid, String outstandingamt,
+			BigDecimal Purchase_amount, eis_taginvoice tinObj, JSONObject jsonRequest) throws JSONException {
+		try {
+			if(psdId.length()==32) {
+				eis_invoice invoice = OBProvider.getInstance().get(eis_invoice.class);
+				FIN_PaymentScheduleDetail psd = OBDal.getInstance().get(FIN_PaymentScheduleDetail.class, psdId);
+				//String organization=(psd.getInvoicePaymentSchedule().getInvoice().getOrganization().getId());
+				invoice.setFINPaymentScheduledetail(psd);
+				invoice.setOrganization(tinObj.getOrganization());
+				invoice.setClient(tinObj.getClient());
+				invoice.setEisTaginvoice(tinObj);
+				invoice.setTaggingAmt(Purchase_amount);
+				log.warn("psd:-"+psd);
+				invoice.setInvoice(psd.getInvoicePaymentSchedule().getInvoice());
+				invoice.setSotrx(psd.getInvoicePaymentSchedule().getInvoice().isSalesTransaction());
+				OBDal.getInstance().save(invoice);
+				OBDal.getInstance().flush();
+			}else {
+				String s1=psdId;
+				String r1=",";
+				String r2="','";
+				String r3="'";
+				String psdIds=s1.replaceAll(r1,r2);
+				psdIds=r3.concat(psdIds).concat(r3);
+				log.warn("After replace ids="+psdIds);
+				String FpsdHql = "select e from FIN_Payment_ScheduleDetail e where e.id in ("+psdIds+") order by e.amount ASC";
+				Query Fpsdlist = OBDal.getInstance().getSession().createQuery(FpsdHql);
+				List<FIN_PaymentScheduleDetail> getFpsdlist = Fpsdlist.list();
+				log.warn("getemquerylist=" + getFpsdlist.size());
+				if (!getFpsdlist.isEmpty()) {
+					for(FIN_PaymentScheduleDetail psd:getFpsdlist) {
+						BigDecimal fin_detailamt = new BigDecimal(0);
+						BigDecimal totalpaidamt = new BigDecimal(0);
+						BigDecimal n = new BigDecimal(0);
+						fin_detailamt=fin_detailamt.add(psd.getAmount());
+						if(fin_detailamt.compareTo(Purchase_amount) >=0) {
+							fin_detailamt=psd.getAmount().subtract((fin_detailamt.subtract(Purchase_amount)));
+							if(fin_detailamt.compareTo(n) >0) {
+								eis_invoice invoice = OBProvider.getInstance().get(eis_invoice.class);
+								invoice.setFINPaymentScheduledetail(psd);
+								invoice.setOrganization(tinObj.getOrganization());
+								invoice.setClient(tinObj.getClient());
+								invoice.setEisTaginvoice(tinObj);
+								invoice.setTaggingAmt(fin_detailamt);
+								log.warn("psd:-"+psd);
+								invoice.setInvoice(psd.getInvoicePaymentSchedule().getInvoice());
+								invoice.setSotrx(psd.getInvoicePaymentSchedule().getInvoice().isSalesTransaction());
+								OBDal.getInstance().save(invoice);
+								OBDal.getInstance().flush();
+							}
+							totalpaidamt=totalpaidamt.add(fin_detailamt);
+							fin_detailamt=totalpaidamt;
+						}
+						else {
+							eis_invoice invoice = OBProvider.getInstance().get(eis_invoice.class);
+							invoice.setFINPaymentScheduledetail(psd);
+							invoice.setOrganization(tinObj.getOrganization());
+							invoice.setClient(tinObj.getClient());
+							invoice.setEisTaginvoice(tinObj);
+							invoice.setTaggingAmt(psd.getAmount());
+							log.warn("psd:-"+psd);
+							invoice.setInvoice(psd.getInvoicePaymentSchedule().getInvoice());
+							invoice.setSotrx(psd.getInvoicePaymentSchedule().getInvoice().isSalesTransaction());
+							OBDal.getInstance().save(invoice);
+							OBDal.getInstance().flush();
+							totalpaidamt=totalpaidamt.add(psd.getAmount());
+						}
+					}
+				}
+				else {
+					String msgstring = "FIN Payment Schedule Details not found";
+					OBDal.getInstance().rollbackAndClose();
+					log.warn("time:" + msgstring);
+					errormsg(jsonRequest, msgstring);
+					return jsonRequest;
+				}
+			}
+			} catch (Exception e) {
+				try {
+					JSONObject jsonObj = new JSONObject(JsonUtils.convertExceptionToJson(e));
+					String message = (jsonObj.getJSONObject("response")).getJSONObject("error").getString("message");
+					OBDal.getInstance().rollbackAndClose();
+					JSONObject msg1 = new JSONObject();
+					msg1.put("severity", "error");
+					msg1.put("text", message);
+					jsonRequest.put("message", msg1);
+					return jsonRequest;
+				} catch (JSONException t) {
+					throw new OBException(t);
+				}
+			}
+		return jsonRequest;
+	}
+}
+
